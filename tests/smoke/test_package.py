@@ -13,6 +13,12 @@ def test_all() -> None:
     assert set(pkg.__all__) == {
         "__version__",
         "__version_tuple__",
-        "SplineCoefs_from_GriddedData",
-        "SplineInterpolant",
+        "compute_coeffs",
+        "AbstractSplineInterpolant",
+        "spline_interpolant",
+        "Spline1DInterpolant",
+        "Spline2DInterpolant",
+        "Spline3DInterpolant",
+        "Spline4DInterpolant",
+        "Spline5DInterpolant",
     }
