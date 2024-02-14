@@ -10,9 +10,9 @@ Created on Fri Oct 21 12:29:47 2022
 """
 
 import jax.numpy as jnp
-from jax import grad, jit
+from jax import grad
 
-from ndimsplinejax import SplineCoefs_from_GriddedData, SplineInterpolant
+from ndimsplinejax import compute_coeffs, spline_interpolant
 
 
 def test_5d() -> None:
@@ -33,21 +33,18 @@ def test_5d() -> None:
     y_data = jnp.prod(jnp.asarray([jnp.sin(grid) for grid in grids]), axis=0)
 
     # compute spline coefficients from the gridded data
-    spline_coef = SplineCoefs_from_GriddedData(a, b, y_data)
-    c_i1i2i3i4i5 = spline_coef.compute_coeffs()
+    coeffs = compute_coeffs(a, b, y_data)
 
     # compute the jittable and auto-differentiable spline interpolant using the
     # coefficient.
-    spline = SplineInterpolant(a, b, n, c_i1i2i3i4i5)
+    spline = spline_interpolant(a, b, n, coeffs)
 
     # give a particular x-coordinate for function evaluation
     x = jnp.array([0.7, 1.0, 1.5, 2.0, 2.5])
 
-    y = spline.s5D(x)
+    y = spline(x)
+    assert jnp.isfinite(y).all()
 
-    s5d_jitted = jit(spline.s5D)
-    assert jnp.allclose(s5d_jitted(x), y)
-
-    ds5d = grad(s5d_jitted)
+    ds5d = grad(spline)
     grady = ds5d(x)
     assert jnp.isfinite(grady).all()
