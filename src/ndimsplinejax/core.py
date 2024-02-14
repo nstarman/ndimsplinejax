@@ -1,11 +1,23 @@
 """N-dimensional spline interpolant."""
 
-from typing import TypeAlias
+__all__ = [
+    "AbstractSplineInterpolant",
+    "spline_interpolant",
+    "Spline1DInterpolant",
+    "Spline2DInterpolant",
+    "Spline3DInterpolant",
+    "Spline4DInterpolant",
+    "Spline5DInterpolant",
+]
 
+from functools import partial
+from typing import Any, TypeAlias
+
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax import lax
-from jaxtyping import Array, ArrayLike, Float, Int
+from jaxtyping import Array, Float, Int
 
 FloatScalar: TypeAlias = Float[Array, ""]
 IntScalar: TypeAlias = Int[Array, ""]
@@ -26,8 +38,12 @@ def _u(
     ) * jnp.heaviside(2.0 - t, 1.0)
 
 
-class SplineInterpolant:
-    """Spline Interpolant.
+def _float_array(x: Any) -> Float[Array, "..."]:
+    return jnp.asarray(x, dtype=jax.dtypes.canonicalize_dtype(float))
+
+
+class AbstractSplineInterpolant(eqx.Module):  # type: ignore[misc]
+    """Abstract Spline Interpolant.
 
     Auto-differencible and Jittable N-dimensitonal spline interpolant using
     Google/JAX Current code supports only 3 and 4 dimensions (N=3 or 4), which
@@ -68,38 +84,61 @@ class SplineInterpolant:
     @author: moteki
     """
 
-    def __init__(
-        self,
-        a: ArrayLike | list[float | int],
-        b: ArrayLike | list[float | int],
-        n: ArrayLike | list[float | int],
-        c: ArrayLike | list[float | int],
-    ) -> None:
-        self.N = len(a)  # dimension of the problem
-        # list of lower bound of x-coordinate in each dimension # [dim1, dim2, ...]
-        self.a = jnp.asarray(a)
-        # list of uppder bound of x-coordinate in each dimension # [dim1, dim2, ...]
-        self.b = jnp.asarray(b)
-        self.n = jnp.asarray(n)  # number of grid interval n in each dimension
-        self.h = (self.b - self.a) / self.n  # grid interval in each dimension
-        # N-dimensional numpy array of y-data ydata[idx1,idx2,...] where the
-        # idx1 is the index of grid point along 1st dimension and so forth.
-        self.c = jnp.asarray(c)
 
-    def s1D(self, x: jax.Array) -> jax.Array:
+def spline_interpolant(
+    a: Any, b: Any, n: Any, coeffs: Any
+) -> AbstractSplineInterpolant:
+    """Return spline interpolant."""
+    N = len(coeffs.shape)
+    match N:
+        case 1:
+            return Spline1DInterpolant(a, b, n, coeffs)
+        case 2:
+            return Spline2DInterpolant(a, b, n, coeffs)
+        case 3:
+            return Spline3DInterpolant(a, b, n, coeffs)
+        case 4:
+            return Spline4DInterpolant(a, b, n, coeffs)
+        case 5:
+            return Spline5DInterpolant(a, b, n, coeffs)
+        case _:
+            msg = f"Unsupported number of dimensions: {N}"
+            raise ValueError(msg)
+
+
+#####################################################################
+
+
+class Spline1DInterpolant(AbstractSplineInterpolant):
+    """1D-spline interpolant."""
+
+    a: Float[Array, "N"] = eqx.field(converter=_float_array)
+    b: Float[Array, "N"] = eqx.field(converter=_float_array)
+    n: Float[Array, "N"] = eqx.field(converter=_float_array)
+    c: Float[Array, "*shape"] = eqx.field(converter=_float_array)
+
+    @property
+    def h(self) -> Float[Array, "N"]:
+        """Grid intervals."""
+        return (self.b - self.a) / self.n
+
+    @partial(jax.jit)
+    def __call__(self, x: Float[Array, "N"]) -> jax.Array:
         """1D-spline interpolation.
 
-        INPUTs
-        x: 1-dim x vector (float) at which interplated y-value is evaluated
-        a: 1-dim vector (float) of the lower boundary of the each of the x-dimension
-        h: 1-dim vector (float) of the grid interval of the each of the x-dimension
-        c: spline coefficient (1-dim array)
+        Parameters
+        ----------
+        x: Array[float, (N,)]
+            1-dim x vector (float) at which interplated y-value is evaluated
         """
+        h = self.h
 
+        # TODO: consolidate all the f functions into one
+        @jax.jit  # type: ignore[misc]
         def f(
             carry: FloatScalar, i1: IntScalar, x: FloatScalar
         ) -> tuple[FloatScalar, FloatScalar]:
-            val = self.c[i1 - 1] * _u(i1, self.a[0], self.h[0], x[0])
+            val = self.c[i1 - 1] * _u(i1, self.a[0], h[0], x[0])
             carry += val
             return carry, val
 
@@ -109,16 +148,27 @@ class SplineInterpolant:
 
         return carry
 
-    def s2D(self, x: Float[Array, "2"]) -> Float[Array, "2"]:
-        """2D-spline interpolation.
 
-        INPUTs
-        x: 2-dim x vector (float) at which interplated y-value is evaluated
-        a: 2-dim vector (float) of the lower boundary of the each of the x-dimension
-        h: 2-dim vector (float) of the grid interval of the each of the x-dimension
-        c: spline coefficient (2-dim array)
-        """
+class Spline2DInterpolant(AbstractSplineInterpolant):
+    """2D-spline interpolant."""
 
+    a: Float[Array, "N"] = eqx.field(converter=_float_array)
+    b: Float[Array, "N"] = eqx.field(converter=_float_array)
+    n: Float[Array, "N"] = eqx.field(converter=_float_array)
+    c: Float[Array, "*shape"] = eqx.field(converter=_float_array)
+
+    @property
+    def h(self) -> Float[Array, "N"]:
+        """Grid intervals."""
+        return (self.b - self.a) / self.n
+
+    @partial(jax.jit)
+    def __call__(self, x: Float[Array, "2"]) -> Float[Array, "2"]:
+        """2D-spline interpolation."""
+        h = self.h
+
+        # TODO: consolidate all the f functions into one
+        @jax.jit  # type: ignore[misc]
         def f(
             carry: FloatScalar,
             i1: IntScalar,
@@ -127,8 +177,8 @@ class SplineInterpolant:
         ) -> tuple[FloatScalar, FloatScalar]:
             val = (
                 self.c[i1 - 1, i2 - 1]
-                * _u(i1, self.a[0], self.h[0], x[0])
-                * _u(i2, self.a[1], self.h[1], x[1])
+                * _u(i1, self.a[0], h[0], x[0])
+                * _u(i2, self.a[1], h[1], x[1])
             )
             carry += val
             return carry, val
@@ -144,16 +194,27 @@ class SplineInterpolant:
 
         return carry
 
-    def s3D(self, x: jax.Array) -> jax.Array:
-        """3D-spline interpolation.
 
-        INPUTs
-        x: 3-dim x vector (float) at which interplated y-value is evaluated
-        a: 3-dim vector (float) of the lower boundary of the each of the x-dimension
-        h: 3-dim vector (float) of the grid interval of the each of the x-dimension
-        c: spline coefficient (3-dim array)
-        """
+class Spline3DInterpolant(AbstractSplineInterpolant):
+    """3D-spline interpolant."""
 
+    a: Float[Array, "N"] = eqx.field(converter=_float_array)
+    b: Float[Array, "N"] = eqx.field(converter=_float_array)
+    n: Float[Array, "N"] = eqx.field(converter=_float_array)
+    c: Float[Array, "*shape"] = eqx.field(converter=_float_array)
+
+    @property
+    def h(self) -> Float[Array, "N"]:
+        """Grid intervals."""
+        return (self.b - self.a) / self.n
+
+    @partial(jax.jit)
+    def __call__(self, x: jax.Array) -> jax.Array:
+        """3D-spline interpolation."""
+        h = self.h
+
+        # TODO: consolidate all the f functions into one
+        @jax.jit  # type: ignore[misc]
         def f(
             carry: FloatScalar,
             i1: IntScalar,
@@ -163,9 +224,9 @@ class SplineInterpolant:
         ) -> tuple[FloatScalar, FloatScalar]:
             val = (
                 self.c[i1 - 1, i2 - 1, i3 - 1]
-                * _u(i1, self.a[0], self.h[0], x[0])
-                * _u(i2, self.a[1], self.h[1], x[1])
-                * _u(i3, self.a[2], self.h[2], x[2])
+                * _u(i1, self.a[0], h[0], x[0])
+                * _u(i2, self.a[1], h[1], x[1])
+                * _u(i3, self.a[2], h[2], x[2])
             )
             carry += val
             return carry, val
@@ -188,16 +249,27 @@ class SplineInterpolant:
 
         return carry
 
-    def s4D(self, x: jax.Array) -> jax.Array:
-        """4D-spline interpolation.
 
-        INPUTs
-        x: 4-dim x vector (float) at which interplated y-value is evaluated
-        a: 4-dim vector (float) of the lower boundary of the each of the x-dimension
-        h: 4-dim vector (float) of the grid interval of the each of the x-dimension
-        c: spline coefficient (4-dim array)
-        """
+class Spline4DInterpolant(AbstractSplineInterpolant):
+    """4D-spline interpolant."""
 
+    a: Float[Array, "N"] = eqx.field(converter=_float_array)
+    b: Float[Array, "N"] = eqx.field(converter=_float_array)
+    n: Float[Array, "N"] = eqx.field(converter=_float_array)
+    c: Float[Array, "*shape"] = eqx.field(converter=_float_array)
+
+    @property
+    def h(self) -> Float[Array, "N"]:
+        """Grid intervals."""
+        return (self.b - self.a) / self.n
+
+    @partial(jax.jit)
+    def __call__(self, x: jax.Array) -> jax.Array:
+        """4D-spline interpolation."""
+        h = self.h
+
+        # TODO: consolidate all the f functions into one
+        @jax.jit  # type: ignore[misc]
         def f(
             carry: FloatScalar,
             i1: IntScalar,
@@ -208,10 +280,10 @@ class SplineInterpolant:
         ) -> tuple[FloatScalar, FloatScalar]:
             val = (
                 self.c[i1 - 1, i2 - 1, i3 - 1, i4 - 1]
-                * _u(i1, self.a[0], self.h[0], x[0])
-                * _u(i2, self.a[1], self.h[1], x[1])
-                * _u(i3, self.a[2], self.h[2], x[2])
-                * _u(i4, self.a[3], self.h[3], x[3])
+                * _u(i1, self.a[0], h[0], x[0])
+                * _u(i2, self.a[1], h[1], x[1])
+                * _u(i3, self.a[2], h[2], x[2])
+                * _u(i4, self.a[3], h[3], x[3])
             )
             carry += val
             return carry, val
@@ -239,16 +311,27 @@ class SplineInterpolant:
 
         return carry
 
-    def s5D(self, x: jax.Array) -> jax.Array:
-        """5D-spline interpolation.
 
-        INPUTs
-        x: 5-dim x vector (float) at which interplated y-value is evaluated
-        a: 5-dim vector (float) of the lower boundary of the each of the x-dimension
-        h: 5-dim vector (float) of the grid interval of the each of the x-dimension
-        c: spline coefficient (5-dim array)
-        """
+class Spline5DInterpolant(AbstractSplineInterpolant):
+    """5D-spline interpolant."""
 
+    a: Float[Array, "5"] = eqx.field(converter=_float_array)
+    b: Float[Array, "5"] = eqx.field(converter=_float_array)
+    n: Float[Array, "5"] = eqx.field(converter=_float_array)
+    c: Float[Array, "*shape"] = eqx.field(converter=_float_array)
+
+    @property
+    def h(self) -> Float[Array, "5"]:
+        """Grid intervals."""
+        return (self.b - self.a) / self.n
+
+    @partial(jax.jit)
+    def __call__(self, x: Float[Array, "5"]) -> Float[Array, ""]:
+        """5D-spline interpolation."""
+        h = self.h
+
+        # TODO: consolidate all the f functions into one
+        @jax.jit  # type: ignore[misc]
         def f(
             carry: FloatScalar,
             i1: IntScalar,
@@ -260,11 +343,11 @@ class SplineInterpolant:
         ) -> tuple[FloatScalar, FloatScalar]:
             val = (
                 self.c[i1 - 1, i2 - 1, i3 - 1, i4 - 1, i5 - 1]
-                * _u(i1, self.a[0], self.h[0], x[0])
-                * _u(i2, self.a[1], self.h[1], x[1])
-                * _u(i3, self.a[2], self.h[2], x[2])
-                * _u(i4, self.a[3], self.h[3], x[3])
-                * _u(i5, self.a[4], self.h[4], x[4])
+                * _u(i1, self.a[0], h[0], x[0])
+                * _u(i2, self.a[1], h[1], x[1])
+                * _u(i3, self.a[2], h[2], x[2])
+                * _u(i4, self.a[3], h[3], x[3])
+                * _u(i5, self.a[4], h[4], x[4])
             )
             carry += val
             return carry, val
