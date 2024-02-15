@@ -329,7 +329,7 @@ class Spline3DInterpolant(AbstractSplineInterpolant):
             This method can slower than the `evaluate` method, which uses
             a nested `lax.scan` function.
         """
-        h = self.h
+        a, h = self.a, self.h
         shape = self.c.shape
 
         def single(
@@ -340,9 +340,9 @@ class Spline3DInterpolant(AbstractSplineInterpolant):
             # Calculate the value of the spline at these indices
             val = (
                 self.c[idx]
-                * _u(idx[0] + 1, self.a[0], h[0], x[0])
-                * _u(idx[1] + 1, self.a[1], h[1], x[1])
-                * _u(idx[2] + 1, self.a[2], h[2], x[2])
+                * _u(idx[0] + 1, a[0], h[0], x[0])
+                * _u(idx[1] + 1, a[1], h[1], x[1])
+                * _u(idx[2] + 1, a[2], h[2], x[2])
             )
             carry += val
             return carry, val
@@ -353,7 +353,7 @@ class Spline3DInterpolant(AbstractSplineInterpolant):
     @partial(jax.jit)
     def _evaluate_vmap(self, x: Float[Array, "{self.ndim}"]) -> Float[Array, ""]:
         """3D-spline interpolation."""
-        h = self.h
+        a, h = self.a, self.h
         shape = self.c.shape
 
         @partial(jax.vmap, in_axes=(0, None))  # Vectorize over the indices
@@ -363,9 +363,9 @@ class Spline3DInterpolant(AbstractSplineInterpolant):
             # Calculate the value of the spline at these indices
             return (
                 self.c[idx]
-                * _u(idx[0] + 1, self.a[0], h[0], x[0])
-                * _u(idx[1] + 1, self.a[1], h[1], x[1])
-                * _u(idx[2] + 1, self.a[2], h[2], x[2])
+                * _u(idx[0] + 1, a[0], h[0], x[0])
+                * _u(idx[1] + 1, a[1], h[1], x[1])
+                * _u(idx[2] + 1, a[2], h[2], x[2])
             )
 
         return jnp.sum(value_at_index(jnp.arange(self.c.size), x))
@@ -431,7 +431,7 @@ class Spline4DInterpolant(AbstractSplineInterpolant):
             This method can slower than the `evaluate` method, which uses
             a nested `lax.scan` function.
         """
-        h = self.h
+        a, h = self.a, self.h
         shape = self.c.shape
 
         def single(
@@ -442,10 +442,10 @@ class Spline4DInterpolant(AbstractSplineInterpolant):
             # Calculate the value of the spline at these indices
             val = (
                 self.c[idx]
-                * _u(idx[0] + 1, self.a[0], h[0], x[0])
-                * _u(idx[1] + 1, self.a[1], h[1], x[1])
-                * _u(idx[2] + 1, self.a[2], h[2], x[2])
-                * _u(idx[3] + 1, self.a[3], h[3], x[3])
+                * _u(idx[0] + 1, a[0], h[0], x[0])
+                * _u(idx[1] + 1, a[1], h[1], x[1])
+                * _u(idx[2] + 1, a[2], h[2], x[2])
+                * _u(idx[3] + 1, a[3], h[3], x[3])
             )
             carry += val
             return carry, val
@@ -456,7 +456,7 @@ class Spline4DInterpolant(AbstractSplineInterpolant):
     @partial(jax.jit)
     def _evaluate_vmap(self, x: Float[Array, "{self.ndim}"]) -> Float[Array, ""]:
         """4D-spline interpolation."""
-        h = self.h
+        a, h = self.a, self.h
         shape = self.c.shape
 
         @partial(jax.vmap, in_axes=(0, None))  # Vectorize over the indices
@@ -466,10 +466,10 @@ class Spline4DInterpolant(AbstractSplineInterpolant):
             # Calculate the value of the spline at these indices
             return (
                 self.c[idx]
-                * _u(idx[0] + 1, self.a[0], h[0], x[0])
-                * _u(idx[1] + 1, self.a[1], h[1], x[1])
-                * _u(idx[2] + 1, self.a[2], h[2], x[2])
-                * _u(idx[3] + 1, self.a[3], h[3], x[3])
+                * _u(idx[0] + 1, a[0], h[0], x[0])
+                * _u(idx[1] + 1, a[1], h[1], x[1])
+                * _u(idx[2] + 1, a[2], h[2], x[2])
+                * _u(idx[3] + 1, a[3], h[3], x[3])
             )
 
         return jnp.sum(value_at_index(jnp.arange(self.c.size), x))
@@ -540,7 +540,7 @@ class Spline5DInterpolant(AbstractSplineInterpolant):
             This method can slower than the `evaluate` method, which uses
             a nested `lax.scan` function.
         """
-        h = self.h
+        a, h = self.a, self.h
         shape = self.c.shape
 
         def single(
@@ -551,11 +551,11 @@ class Spline5DInterpolant(AbstractSplineInterpolant):
             # Calculate the value of the spline at these indices
             val = (
                 self.c[idx]
-                * _u(idx[0] + 1, self.a[0], h[0], x[0])
-                * _u(idx[1] + 1, self.a[1], h[1], x[1])
-                * _u(idx[2] + 1, self.a[2], h[2], x[2])
-                * _u(idx[3] + 1, self.a[3], h[3], x[3])
-                * _u(idx[4] + 1, self.a[4], h[4], x[4])
+                * _u(idx[0] + 1, a[0], h[0], x[0])
+                * _u(idx[1] + 1, a[1], h[1], x[1])
+                * _u(idx[2] + 1, a[2], h[2], x[2])
+                * _u(idx[3] + 1, a[3], h[3], x[3])
+                * _u(idx[4] + 1, a[4], h[4], x[4])
             )
             carry += val
             return carry, val
@@ -566,7 +566,7 @@ class Spline5DInterpolant(AbstractSplineInterpolant):
     @partial(jax.jit)
     def _evaluate_vmap(self, x: Float[Array, "{self.ndim}"]) -> Float[Array, ""]:
         """5D-spline interpolation."""
-        h = self.h
+        a, h = self.a, self.h
         shape = self.c.shape
 
         @partial(jax.vmap, in_axes=(0, None))  # Vectorize over the indices
@@ -576,11 +576,11 @@ class Spline5DInterpolant(AbstractSplineInterpolant):
             # Calculate the value of the spline at these indices
             return (
                 self.c[idx]
-                * _u(idx[0] + 1, self.a[0], h[0], x[0])
-                * _u(idx[1] + 1, self.a[1], h[1], x[1])
-                * _u(idx[2] + 1, self.a[2], h[2], x[2])
-                * _u(idx[3] + 1, self.a[3], h[3], x[3])
-                * _u(idx[4] + 1, self.a[4], h[4], x[4])
+                * _u(idx[0] + 1, a[0], h[0], x[0])
+                * _u(idx[1] + 1, a[1], h[1], x[1])
+                * _u(idx[2] + 1, a[2], h[2], x[2])
+                * _u(idx[3] + 1, a[3], h[3], x[3])
+                * _u(idx[4] + 1, a[4], h[4], x[4])
             )
 
         return jnp.sum(value_at_index(jnp.arange(self.c.size), x))
