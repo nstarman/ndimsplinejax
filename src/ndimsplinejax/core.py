@@ -11,7 +11,7 @@ __all__ = [
 ]
 
 from functools import partial
-from typing import Any, TypeAlias
+from typing import Any, ClassVar, Literal, TypeAlias
 
 import equinox as eqx
 import jax
@@ -84,6 +84,35 @@ class AbstractSplineInterpolant(eqx.Module):  # type: ignore[misc]
     @author: moteki
     """
 
+    a: eqx.AbstractVar[Float[Array, "{self.ndim}"]]
+    b: eqx.AbstractVar[Float[Array, "{self.ndim}"]]
+    n: eqx.AbstractVar[Float[Array, "{self.ndim}"]]
+
+    ndim: eqx.AbstractClassVar[int]
+
+    @property
+    def h(self) -> Float[Array, "{self.ndim}"]:
+        """Grid intervals."""
+        return (self.b - self.a) / self.n
+
+    @partial(jax.jit, static_argnames=("method",))
+    def __call__(
+        self,
+        x: Float[Array, "5"],
+        method: Literal["vmap", "nested_scan", "single_scan"] = "vmap",
+    ) -> Float[Array, ""]:
+        """5D-spline interpolation."""
+        methods = ("vmap", "nested_scan", "single_scan")
+        return lax.switch(
+            methods.index(method),
+            (
+                self._evaluate_vmap,
+                self._evaluate_nested_scan,
+                self._evaluate_single_scan,
+            ),
+            x,
+        )
+
 
 def spline_interpolant(
     a: Any, b: Any, n: Any, coeffs: Any
@@ -112,18 +141,15 @@ def spline_interpolant(
 class Spline1DInterpolant(AbstractSplineInterpolant):
     """1D-spline interpolant."""
 
-    a: Float[Array, "N"] = eqx.field(converter=_float_array)
-    b: Float[Array, "N"] = eqx.field(converter=_float_array)
-    n: Float[Array, "N"] = eqx.field(converter=_float_array)
+    a: Float[Array, "{self.ndim}"] = eqx.field(converter=_float_array)
+    b: Float[Array, "{self.ndim}"] = eqx.field(converter=_float_array)
+    n: Float[Array, "{self.ndim}"] = eqx.field(converter=_float_array)
     c: Float[Array, "*shape"] = eqx.field(converter=_float_array)
 
-    @property
-    def h(self) -> Float[Array, "N"]:
-        """Grid intervals."""
-        return (self.b - self.a) / self.n
+    ndim: ClassVar[int] = 1  # type: ignore[misc]
 
     @partial(jax.jit)
-    def __call__(self, x: Float[Array, "N"]) -> jax.Array:
+    def _evaluate_nested_scan(self, x: Float[Array, "{self.ndim}"]) -> jax.Array:
         """1D-spline interpolation.
 
         Parameters
@@ -131,255 +157,430 @@ class Spline1DInterpolant(AbstractSplineInterpolant):
         x: Array[float, (N,)]
             1-dim x vector (float) at which interplated y-value is evaluated
         """
-        h = self.h
+        a, h = self.a, self.h
+        shape = self.c.shape
 
-        # TODO: consolidate all the f functions into one
-        @jax.jit  # type: ignore[misc]
-        def f(
-            carry: FloatScalar, i1: IntScalar, x: FloatScalar
+        def single(
+            carry: FloatScalar, idx: tuple[IntScalar], x: FloatScalar
         ) -> tuple[FloatScalar, FloatScalar]:
-            val = self.c[i1 - 1] * _u(i1, self.a[0], h[0], x[0])
+            val = self.c[idx[0]] * _u(idx[0] + 1, a[0], h[0], x[0])
             carry += val
             return carry, val
 
-        i1arr = jnp.arange(1, self.c.shape[0] + 1)
-
-        carry, val = lax.scan(lambda s1, i1: f(s1, i1=i1, x=x), 0.0, i1arr)
+        carry, _ = lax.scan(
+            lambda s1, i0: single(s1, idx=(i0,), x=x), 0.0, jnp.arange(shape[0])
+        )
 
         return carry
+
+    _evaluate_single_scan = _evaluate_nested_scan  # only for 1D spline
+
+    @partial(jax.jit)
+    def _evaluate_vmap(self, x: Float[Array, "{self.ndim}"]) -> Float[Array, ""]:
+        """1D-spline interpolation."""
+        h = self.h
+        shape = self.c.shape
+
+        @partial(jax.vmap, in_axes=(0, None))  # Vectorize over the indices
+        def value_at_index(flat_index: IntScalar, x: Float[Array, "1"]) -> FloatScalar:
+            return self.c[flat_index] * _u(flat_index + 1, self.a[0], h[0], x[0])
+
+        return jnp.sum(value_at_index(jnp.arange(self.c.size), x))
 
 
 class Spline2DInterpolant(AbstractSplineInterpolant):
     """2D-spline interpolant."""
 
-    a: Float[Array, "N"] = eqx.field(converter=_float_array)
-    b: Float[Array, "N"] = eqx.field(converter=_float_array)
-    n: Float[Array, "N"] = eqx.field(converter=_float_array)
+    a: Float[Array, "{self.ndim}"] = eqx.field(converter=_float_array)
+    b: Float[Array, "{self.ndim}"] = eqx.field(converter=_float_array)
+    n: Float[Array, "{self.ndim}"] = eqx.field(converter=_float_array)
     c: Float[Array, "*shape"] = eqx.field(converter=_float_array)
 
-    @property
-    def h(self) -> Float[Array, "N"]:
-        """Grid intervals."""
-        return (self.b - self.a) / self.n
+    ndim: ClassVar[int] = 2  # type: ignore[misc]
 
     @partial(jax.jit)
-    def __call__(self, x: Float[Array, "2"]) -> Float[Array, "2"]:
+    def _evaluate_nested_scan(self, x: Float[Array, "{self.ndim}"]) -> Float[Array, ""]:
         """2D-spline interpolation."""
-        h = self.h
+        a, h = self.a, self.h
+        shape = self.c.shape
 
-        # TODO: consolidate all the f functions into one
-        @jax.jit  # type: ignore[misc]
-        def f(
-            carry: FloatScalar,
-            i1: IntScalar,
-            i2: IntScalar,
-            x: FloatScalar,
+        def single(
+            carry: FloatScalar, idx: tuple[IntScalar, IntScalar], x: FloatScalar
         ) -> tuple[FloatScalar, FloatScalar]:
             val = (
-                self.c[i1 - 1, i2 - 1]
-                * _u(i1, self.a[0], h[0], x[0])
-                * _u(i2, self.a[1], h[1], x[1])
+                self.c[idx]
+                * _u(idx[0] + 1, a[0], h[0], x[0])
+                * _u(idx[1] + 1, a[1], h[1], x[1])
             )
             carry += val
             return carry, val
 
-        i1arr = jnp.arange(1, self.c.shape[0] + 1)
-        i2arr = jnp.arange(1, self.c.shape[1] + 1)
-
-        carry, val = lax.scan(
-            lambda s1, i1: lax.scan(lambda s2, i2: f(s2, i1=i1, i2=i2, x=x), s1, i2arr),
+        carry, _ = lax.scan(
+            lambda s0, i0: lax.scan(
+                lambda s1, i1: single(s1, idx(i0, i1), x=x), s0, jnp.arange(shape[1])
+            ),
             0.0,
-            i1arr,
+            jnp.arange(shape[0]),
         )
 
         return carry
+
+    @partial(jax.jit)
+    def _evaluate_single_scan(self, x: Float[Array, "{self.ndim}"]) -> Float[Array, ""]:
+        """2D-spline interpolation.
+
+        .. warning::
+
+            This method can slower than the `evaluate` method, which uses
+            a nested `lax.scan` function.
+        """
+        a, h = self.a, self.h
+        shape = self.c.shape
+
+        def single(
+            carry: FloatScalar, flat_index: IntScalar
+        ) -> tuple[FloatScalar, FloatScalar]:
+            # Calculate the original multi-dimensional indices
+            idx = jnp.unravel_index(flat_index, shape)
+            # Calculate the value of the spline at these indices
+            val = (
+                self.c[idx]
+                * _u(idx[0] + 1, a[0], h[0], x[0])
+                * _u(idx[1] + 1, a[1], h[1], x[1])
+            )
+            carry += val
+            return carry, val
+
+        carry, _ = lax.scan(single, 0.0, jnp.arange(self.c.size))
+        return carry
+
+    @partial(jax.jit)
+    def _evaluate_vmap(self, x: Float[Array, "{self.ndim}"]) -> Float[Array, ""]:
+        """5D-spline interpolation."""
+        a, h = self.a, self.h
+        shape = self.c.shape
+
+        @partial(jax.vmap, in_axes=(0, None))  # Vectorize over the indices
+        def value_at_index(flat_index: IntScalar, x: Float[Array, "2"]) -> FloatScalar:
+            # Calculate the original multi-dimensional indices
+            idx = jnp.unravel_index(flat_index, shape)
+            # Calculate the value of the spline at these indices
+            return (
+                self.c[idx]
+                * _u(idx[0] + 1, a[0], h[0], x[0])
+                * _u(idx[1] + 1, a[1], h[1], x[1])
+            )
+
+        return jnp.sum(value_at_index(jnp.arange(self.c.size), x))
 
 
 class Spline3DInterpolant(AbstractSplineInterpolant):
     """3D-spline interpolant."""
 
-    a: Float[Array, "N"] = eqx.field(converter=_float_array)
-    b: Float[Array, "N"] = eqx.field(converter=_float_array)
-    n: Float[Array, "N"] = eqx.field(converter=_float_array)
+    a: Float[Array, "{self.ndim}"] = eqx.field(converter=_float_array)
+    b: Float[Array, "{self.ndim}"] = eqx.field(converter=_float_array)
+    n: Float[Array, "{self.ndim}"] = eqx.field(converter=_float_array)
     c: Float[Array, "*shape"] = eqx.field(converter=_float_array)
 
-    @property
-    def h(self) -> Float[Array, "N"]:
-        """Grid intervals."""
-        return (self.b - self.a) / self.n
+    ndim: ClassVar[int] = 3  # type: ignore[misc]
 
     @partial(jax.jit)
-    def __call__(self, x: jax.Array) -> jax.Array:
+    def _evaluate_nested_scan(self, x: Float[Array, "{self.ndim}"]) -> Float[Array, ""]:
         """3D-spline interpolation."""
-        h = self.h
+        a, h = self.a, self.h
+        shape = self.c.shape
 
-        # TODO: consolidate all the f functions into one
-        @jax.jit  # type: ignore[misc]
-        def f(
+        def single(
             carry: FloatScalar,
-            i1: IntScalar,
-            i2: IntScalar,
-            i3: IntScalar,
+            idx: tuple[IntScalar, IntScalar, IntScalar],
             x: FloatScalar,
         ) -> tuple[FloatScalar, FloatScalar]:
             val = (
-                self.c[i1 - 1, i2 - 1, i3 - 1]
-                * _u(i1, self.a[0], h[0], x[0])
-                * _u(i2, self.a[1], h[1], x[1])
-                * _u(i3, self.a[2], h[2], x[2])
+                self.c[idx]
+                * _u(idx[0] + 1, a[0], h[0], x[0])
+                * _u(idx[1] + 1, a[1], h[1], x[1])
+                * _u(idx[2] + 1, a[2], h[2], x[2])
             )
             carry += val
             return carry, val
 
-        i1arr = jnp.arange(1, self.c.shape[0] + 1)
-        i2arr = jnp.arange(1, self.c.shape[1] + 1)
-        i3arr = jnp.arange(1, self.c.shape[2] + 1)
-
-        carry, val = lax.scan(
-            lambda s1, i1: lax.scan(
-                lambda s2, i2: lax.scan(
-                    lambda s3, i3: f(s3, i1=i1, i2=i2, i3=i3, x=x), s2, i3arr
+        carry, _ = lax.scan(
+            lambda s1, i0: lax.scan(
+                lambda s2, i1: lax.scan(
+                    lambda s3, i2: single(s3, idx=(i0, i1, i2), x=x),
+                    s2,
+                    jnp.arange(shape[2]),
                 ),
                 s1,
-                i2arr,
+                jnp.arange(shape[1]),
             ),
             0.0,
-            i1arr,
+            jnp.arange(shape[0]),
         )
 
         return carry
+
+    @partial(jax.jit)
+    def _evaluate_single_scan(self, x: Float[Array, "{self.ndim}"]) -> Float[Array, ""]:
+        """3D-spline interpolation.
+
+        .. warning::
+
+            This method can slower than the `evaluate` method, which uses
+            a nested `lax.scan` function.
+        """
+        a, h = self.a, self.h
+        shape = self.c.shape
+
+        def single(
+            carry: FloatScalar, flat_index: IntScalar
+        ) -> tuple[FloatScalar, FloatScalar]:
+            # Calculate the original multi-dimensional indices
+            idx = jnp.unravel_index(flat_index, shape)
+            # Calculate the value of the spline at these indices
+            val = (
+                self.c[idx]
+                * _u(idx[0] + 1, a[0], h[0], x[0])
+                * _u(idx[1] + 1, a[1], h[1], x[1])
+                * _u(idx[2] + 1, a[2], h[2], x[2])
+            )
+            carry += val
+            return carry, val
+
+        carry, _ = lax.scan(single, 0.0, jnp.arange(self.c.size))
+        return carry
+
+    @partial(jax.jit)
+    def _evaluate_vmap(self, x: Float[Array, "{self.ndim}"]) -> Float[Array, ""]:
+        """3D-spline interpolation."""
+        a, h = self.a, self.h
+        shape = self.c.shape
+
+        @partial(jax.vmap, in_axes=(0, None))  # Vectorize over the indices
+        def value_at_index(flat_index: IntScalar, x: Float[Array, "5"]) -> FloatScalar:
+            # Calculate the original multi-dimensional indices
+            idx = jnp.unravel_index(flat_index, shape)
+            # Calculate the value of the spline at these indices
+            return (
+                self.c[idx]
+                * _u(idx[0] + 1, a[0], h[0], x[0])
+                * _u(idx[1] + 1, a[1], h[1], x[1])
+                * _u(idx[2] + 1, a[2], h[2], x[2])
+            )
+
+        return jnp.sum(value_at_index(jnp.arange(self.c.size), x))
 
 
 class Spline4DInterpolant(AbstractSplineInterpolant):
     """4D-spline interpolant."""
 
-    a: Float[Array, "N"] = eqx.field(converter=_float_array)
-    b: Float[Array, "N"] = eqx.field(converter=_float_array)
-    n: Float[Array, "N"] = eqx.field(converter=_float_array)
+    a: Float[Array, "{self.ndim}"] = eqx.field(converter=_float_array)
+    b: Float[Array, "{self.ndim}"] = eqx.field(converter=_float_array)
+    n: Float[Array, "{self.ndim}"] = eqx.field(converter=_float_array)
     c: Float[Array, "*shape"] = eqx.field(converter=_float_array)
 
-    @property
-    def h(self) -> Float[Array, "N"]:
-        """Grid intervals."""
-        return (self.b - self.a) / self.n
+    ndim: ClassVar[int] = 4  # type: ignore[misc]
 
     @partial(jax.jit)
-    def __call__(self, x: jax.Array) -> jax.Array:
+    def _evaluate_nested_scan(self, x: Float[Array, "{self.ndim}"]) -> Float[Array, ""]:
         """4D-spline interpolation."""
-        h = self.h
+        a, h = self.a, self.h
+        shape = self.c.shape
 
-        # TODO: consolidate all the f functions into one
-        @jax.jit  # type: ignore[misc]
-        def f(
+        def single(
             carry: FloatScalar,
-            i1: IntScalar,
-            i2: IntScalar,
-            i3: IntScalar,
-            i4: IntScalar,
-            x: FloatScalar,
+            idx: tuple[IntScalar, IntScalar, IntScalar, IntScalar],
+            x: Float[Array, "5"],
         ) -> tuple[FloatScalar, FloatScalar]:
             val = (
-                self.c[i1 - 1, i2 - 1, i3 - 1, i4 - 1]
-                * _u(i1, self.a[0], h[0], x[0])
-                * _u(i2, self.a[1], h[1], x[1])
-                * _u(i3, self.a[2], h[2], x[2])
-                * _u(i4, self.a[3], h[3], x[3])
+                self.c[idx]
+                * _u(idx[0] + 1, a[0], h[0], x[0])
+                * _u(idx[1] + 1, a[1], h[1], x[1])
+                * _u(idx[2] + 1, a[2], h[2], x[2])
+                * _u(idx[3] + 1, a[3], h[3], x[3])
             )
             carry += val
             return carry, val
 
-        i1arr = jnp.arange(1, self.c.shape[0] + 1)
-        i2arr = jnp.arange(1, self.c.shape[1] + 1)
-        i3arr = jnp.arange(1, self.c.shape[2] + 1)
-        i4arr = jnp.arange(1, self.c.shape[3] + 1)
-
-        carry, val = lax.scan(
-            lambda s1, i1: lax.scan(
-                lambda s2, i2: lax.scan(
-                    lambda s3, i3: lax.scan(
-                        lambda s4, i4: f(s4, i1=i1, i2=i2, i3=i3, i4=i4, x=x), s3, i4arr
+        carry, _ = lax.scan(
+            lambda s1, i0: lax.scan(
+                lambda s2, i1: lax.scan(
+                    lambda s3, i2: lax.scan(
+                        lambda s4, i3: single(s4, idx=(i0, i1, i2, i3), x=x),
+                        s3,
+                        jnp.arange(shape[3]),
                     ),
                     s2,
-                    i3arr,
+                    jnp.arange(shape[2]),
                 ),
                 s1,
-                i2arr,
+                jnp.arange(shape[1]),
             ),
             0.0,
-            i1arr,
+            jnp.arange(shape[0]),
         )
 
         return carry
+
+    @partial(jax.jit)
+    def _evaluate_single_scan(self, x: Float[Array, "{self.ndim}"]) -> Float[Array, ""]:
+        """4D-spline interpolation.
+
+        .. warning::
+
+            This method can slower than the `evaluate` method, which uses
+            a nested `lax.scan` function.
+        """
+        a, h = self.a, self.h
+        shape = self.c.shape
+
+        def single(
+            carry: FloatScalar, flat_index: IntScalar
+        ) -> tuple[FloatScalar, FloatScalar]:
+            # Calculate the original multi-dimensional indices
+            idx = jnp.unravel_index(flat_index, shape)
+            # Calculate the value of the spline at these indices
+            val = (
+                self.c[idx]
+                * _u(idx[0] + 1, a[0], h[0], x[0])
+                * _u(idx[1] + 1, a[1], h[1], x[1])
+                * _u(idx[2] + 1, a[2], h[2], x[2])
+                * _u(idx[3] + 1, a[3], h[3], x[3])
+            )
+            carry += val
+            return carry, val
+
+        carry, _ = lax.scan(single, 0.0, jnp.arange(self.c.size))
+        return carry
+
+    @partial(jax.jit)
+    def _evaluate_vmap(self, x: Float[Array, "{self.ndim}"]) -> Float[Array, ""]:
+        """4D-spline interpolation."""
+        a, h = self.a, self.h
+        shape = self.c.shape
+
+        @partial(jax.vmap, in_axes=(0, None))  # Vectorize over the indices
+        def value_at_index(flat_index: IntScalar, x: Float[Array, "4"]) -> FloatScalar:
+            # Calculate the original multi-dimensional indices
+            idx = jnp.unravel_index(flat_index, shape)
+            # Calculate the value of the spline at these indices
+            return (
+                self.c[idx]
+                * _u(idx[0] + 1, a[0], h[0], x[0])
+                * _u(idx[1] + 1, a[1], h[1], x[1])
+                * _u(idx[2] + 1, a[2], h[2], x[2])
+                * _u(idx[3] + 1, a[3], h[3], x[3])
+            )
+
+        return jnp.sum(value_at_index(jnp.arange(self.c.size), x))
 
 
 class Spline5DInterpolant(AbstractSplineInterpolant):
     """5D-spline interpolant."""
 
-    a: Float[Array, "5"] = eqx.field(converter=_float_array)
-    b: Float[Array, "5"] = eqx.field(converter=_float_array)
-    n: Float[Array, "5"] = eqx.field(converter=_float_array)
+    a: Float[Array, "{self.ndim}"] = eqx.field(converter=_float_array)
+    b: Float[Array, "{self.ndim}"] = eqx.field(converter=_float_array)
+    n: Float[Array, "{self.ndim}"] = eqx.field(converter=_float_array)
     c: Float[Array, "*shape"] = eqx.field(converter=_float_array)
 
-    @property
-    def h(self) -> Float[Array, "5"]:
-        """Grid intervals."""
-        return (self.b - self.a) / self.n
+    ndim: ClassVar[int] = 5  # type: ignore[misc]
 
     @partial(jax.jit)
-    def __call__(self, x: Float[Array, "5"]) -> Float[Array, ""]:
+    def _evaluate_nested_scan(self, x: Float[Array, "{self.ndim}"]) -> Float[Array, ""]:
         """5D-spline interpolation."""
-        h = self.h
+        a, h = self.a, self.h
+        shape = self.c.shape
 
-        # TODO: consolidate all the f functions into one
-        @jax.jit  # type: ignore[misc]
-        def f(
+        def single(
             carry: FloatScalar,
-            i1: IntScalar,
-            i2: IntScalar,
-            i3: IntScalar,
-            i4: IntScalar,
-            i5: IntScalar,
+            idx: tuple[IntScalar, IntScalar, IntScalar, IntScalar, IntScalar],
             x: Float[Array, "5"],
         ) -> tuple[FloatScalar, FloatScalar]:
             val = (
-                self.c[i1 - 1, i2 - 1, i3 - 1, i4 - 1, i5 - 1]
-                * _u(i1, self.a[0], h[0], x[0])
-                * _u(i2, self.a[1], h[1], x[1])
-                * _u(i3, self.a[2], h[2], x[2])
-                * _u(i4, self.a[3], h[3], x[3])
-                * _u(i5, self.a[4], h[4], x[4])
+                self.c[idx]
+                * _u(idx[0] + 1, a[0], h[0], x[0])
+                * _u(idx[1] + 1, a[1], h[1], x[1])
+                * _u(idx[2] + 1, a[2], h[2], x[2])
+                * _u(idx[3] + 1, a[3], h[3], x[3])
+                * _u(idx[4] + 1, a[4], h[4], x[4])
             )
             carry += val
             return carry, val
 
-        i1arr = jnp.arange(1, self.c.shape[0] + 1)
-        i2arr = jnp.arange(1, self.c.shape[1] + 1)
-        i3arr = jnp.arange(1, self.c.shape[2] + 1)
-        i4arr = jnp.arange(1, self.c.shape[3] + 1)
-        i5arr = jnp.arange(1, self.c.shape[4] + 1)
-
-        carry, val = lax.scan(
-            lambda s1, i1: lax.scan(
-                lambda s2, i2: lax.scan(
-                    lambda s3, i3: lax.scan(
-                        lambda s4, i4: lax.scan(
-                            lambda s5, i5: f(
-                                s5, i1=i1, i2=i2, i3=i3, i4=i4, i5=i5, x=x
-                            ),
+        carry, _ = lax.scan(
+            lambda s1, i0: lax.scan(
+                lambda s2, i1: lax.scan(
+                    lambda s3, i2: lax.scan(
+                        lambda s4, i3: lax.scan(
+                            lambda s5, i4: single(s5, idx=(i0, i1, i2, i3, i4), x=x),
                             s4,
-                            i5arr,
+                            jnp.arange(shape[4]),
                         ),
                         s3,
-                        i4arr,
+                        jnp.arange(shape[3]),
                     ),
                     s2,
-                    i3arr,
+                    jnp.arange(shape[2]),
                 ),
                 s1,
-                i2arr,
+                jnp.arange(shape[1]),
             ),
             0.0,
-            i1arr,
+            jnp.arange(shape[0]),
         )
 
         return carry
+
+    @partial(jax.jit)
+    def _evaluate_single_scan(self, x: Float[Array, "{self.ndim}"]) -> Float[Array, ""]:
+        """5D-spline interpolation.
+
+        .. warning::
+
+            This method can slower than the `evaluate` method, which uses
+            a nested `lax.scan` function.
+        """
+        a, h = self.a, self.h
+        shape = self.c.shape
+
+        def single(
+            carry: FloatScalar, flat_index: IntScalar
+        ) -> tuple[FloatScalar, FloatScalar]:
+            # Calculate the original multi-dimensional indices
+            idx = jnp.unravel_index(flat_index, shape)
+            # Calculate the value of the spline at these indices
+            val = (
+                self.c[idx]
+                * _u(idx[0] + 1, a[0], h[0], x[0])
+                * _u(idx[1] + 1, a[1], h[1], x[1])
+                * _u(idx[2] + 1, a[2], h[2], x[2])
+                * _u(idx[3] + 1, a[3], h[3], x[3])
+                * _u(idx[4] + 1, a[4], h[4], x[4])
+            )
+            carry += val
+            return carry, val
+
+        carry, _ = lax.scan(single, 0.0, jnp.arange(self.c.size))
+        return carry
+
+    @partial(jax.jit)
+    def _evaluate_vmap(self, x: Float[Array, "{self.ndim}"]) -> Float[Array, ""]:
+        """5D-spline interpolation."""
+        a, h = self.a, self.h
+        shape = self.c.shape
+
+        @partial(jax.vmap, in_axes=(0, None))  # Vectorize over the indices
+        def value_at_index(flat_index: IntScalar, x: Float[Array, "5"]) -> FloatScalar:
+            # Calculate the original multi-dimensional indices
+            idx = jnp.unravel_index(flat_index, shape)
+            # Calculate the value of the spline at these indices
+            return (
+                self.c[idx]
+                * _u(idx[0] + 1, a[0], h[0], x[0])
+                * _u(idx[1] + 1, a[1], h[1], x[1])
+                * _u(idx[2] + 1, a[2], h[2], x[2])
+                * _u(idx[3] + 1, a[3], h[3], x[3])
+                * _u(idx[4] + 1, a[4], h[4], x[4])
+            )
+
+        return jnp.sum(value_at_index(jnp.arange(self.c.size), x))
